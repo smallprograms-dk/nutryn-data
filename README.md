@@ -2,7 +2,7 @@
 
 The scripts that build the food database shipped with [Nutryn](https://smallprograms.dk), a food diary for iPhone by Small Programs (a trading name of INVAR IT ApS).
 
-Work in progress: the build works; checks and a first release follow.
+Each app release ships a database built with these scripts. The repository is tagged with the build date (for example `2026.11.12`, the same date as `built` in the database's `meta` table), so the data in any app version can be traced back to the code that made it.
 
 ## Open Food Facts selection
 
@@ -40,7 +40,19 @@ python3 -I scripts/build.py --food-data ../Nutryn/FoodData
 
 The names, keywords and portions (`--food-data`) are kept in the private app repository, because the names are derived from NEVO. Without that folder the build leaves out NEVO and the portions for the national tables, and says so.
 
-**The built database contains NEVO data and is never published** (not committed, not attached to a release). Only the scripts and the Open Food Facts selection are public.
+### Checks
+
+The build stops, and keeps the previous database, when:
+- a source has fewer foods than expected, or more than 5 % fewer than in the previous build (`--accept-changes` when that is expected, for example a new table version);
+- a known barcode is missing (popular products in each market, listed in `KNOWN_BARCODES`) or a known search finds nothing;
+- energy or macros are out of range, a food has no single default portion, a portion weighs 0 g or more than 2 kg, or a portion belongs to a food that is not in the tables;
+- the database is larger than 150 MB.
+
+The Open Food Facts names are cleaned of HTML entities (`&#039;` → `'`), sometimes encoded several times.
+
+### Publication
+
+**The built database contains NEVO data and is never published** (not committed, not attached to a release). Only the scripts and the Open Food Facts selection are public: from the first app release on, the selection used by each app version is attached to the GitHub release of its tag (ODbL share-alike).
 
 ## Licences
 

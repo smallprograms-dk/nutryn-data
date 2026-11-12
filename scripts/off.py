@@ -18,6 +18,7 @@ Standard library only.
 import argparse
 import csv
 import gzip
+import html
 import os
 import re
 import sys
@@ -83,7 +84,14 @@ def number(value: str) -> float | None:
 
 
 def clean(text: str) -> str:
-    return " ".join((text or "").split())
+    """Single spaces, and HTML entities ("&#039;", even "&amp;amp;amp;") as the characters they stand for."""
+    text = text or ""
+    for _ in range(8):
+        unescaped = html.unescape(text)
+        if unescaped == text:
+            break
+        text = unescaped
+    return " ".join(text.split())
 
 
 def plausible(kcal: float, protein: float, carbohydrates: float, fat: float) -> bool:

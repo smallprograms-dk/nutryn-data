@@ -113,7 +113,7 @@ def load_food_data(folder: Path) -> dict | None:
     return data
 
 
-def build(cache: Path, food_data: dict | None, output: Path) -> dict:
+def build(cache: Path, food_data: dict | None, output: Path, accept_changes: bool) -> dict:
     national = read_tsv(cache / "national-foods.tsv.gz")
     off = read_tsv(cache / "off-selection.tsv.gz")
 
@@ -174,6 +174,7 @@ def build(cache: Path, food_data: dict | None, output: Path) -> dict:
 
     # Portions
     portion_rows = []
+    orphans: list[str] = []
     if food_data:
         keys = {r["portion"]: (r["nl"], r["de"], r["portion"]) for r in food_data["portion-names"]}
 
@@ -195,7 +196,8 @@ def build(cache: Path, food_data: dict | None, output: Path) -> dict:
             for r in rows:
                 food_id = ids.get((source, r[code]))
                 if food_id is None:
-                    continue  # food dropped from the table; reported by the checks
+                    orphans.append(f"{source} {r[code]}")
+                    continue
                 key = nevo_key(r) if source == "nevo" else r["portion"]
                 portion_rows.append((food_id, key, None, number(r["millilitres"]), float(r["grams"]), int(r["is_default"])))
         if untranslated := sorted(k for k, (nl, de, _) in keys.items() if not nl or not de):
@@ -226,9 +228,85 @@ def build(cache: Path, food_data: dict | None, output: Path) -> dict:
     db.commit()
     db.execute("ANALYZE")
     db.execute("VACUUM")
+    problems = check(db, meta, previous_meta(output), food_data is not None, orphans, accept_changes)
     db.close()
+    size = partial.stat().st_size
+    if size > MAX_SIZE:
+        problems.append(f"database is {size / 1e6:.0f} MB, more than {MAX_SIZE / 1e6:.0f} MB")
+    if problems:
+        fail("checks failed; the previous database is kept.\n  - " + "\n  - ".join(problems))
     os.replace(partial, output)
     return meta
+
+
+# Checks (D6). A failing check stops the build before the new file replaces
+# the old one. Known barcodes: popular products in each market; when one
+# disappears from Open Food Facts for good, replace it here.
+MIN_COUNTS = {"nevo": 2000, "bls": 7000, "cofid": 2500, "off": 500_000}
+MAX_DROP = 0.05  # largest allowed drop per source compared with the previous build
+MAX_SIZE = 150e6
+KNOWN_BARCODES = {
+    "8718906888463": "AH halfvolle melk (NL)",
+    "8710956001151": "Hertog Jan Pilsener (NL)",
+    "4001686028636": "Haribo Goldbären (DE)",
+    "7622201775421": "Milka Alpenmilch (DE)",
+    "4002044039103": "Dr. Oetker Ristorante (DE)",
+    "5000157024909": "Heinz Baked Beans (GB)",
+    "5000159407236": "Mars (GB)",
+}
+KNOWN_SEARCHES = [("appel", "nevo"), ("Vollkornbrot", "bls"), ("haggis", "cofid"), ("halfvolle melk", "off")]
+
+
+def previous_meta(output: Path) -> dict:
+    if not output.exists():
+        return {}
+    try:
+        with sqlite3.connect(f"file:{output}?mode=ro", uri=True) as old:
+            return dict(old.execute("SELECT key, value FROM meta"))
+    except sqlite3.Error:
+        return {}
+
+
+def check(db: sqlite3.Connection, meta: dict, previous: dict, with_nevo: bool, orphans: list[str], accept_changes: bool) -> list[str]:
+    problems = []
+    for source, minimum in MIN_COUNTS.items():
+        if source == "nevo" and not with_nevo:
+            continue
+        count = int(meta.get(f"count_{source}", 0))
+        if count < minimum:
+            problems.append(f"{source}: {count:,} foods, expected at least {minimum:,}")
+        before = int(previous.get(f"count_{source}", 0))
+        if before and count < before * (1 - MAX_DROP) and not accept_changes:
+            problems.append(f"{source}: {count:,} foods, {before:,} in the previous build (use --accept-changes if expected)")
+    for barcode, label in KNOWN_BARCODES.items():
+        if not db.execute("SELECT 1 FROM food WHERE barcode = ?", (barcode,)).fetchone():
+            problems.append(f"known barcode missing: {barcode} {label}")
+    for term, source in KNOWN_SEARCHES:
+        if with_nevo or source != "nevo":
+            match = " ".join(f'"{word}"*' for word in term.split())
+            hit = db.execute("SELECT 1 FROM food_fts JOIN food f ON f.id = food_fts.rowid "
+                             "WHERE food_fts MATCH ? AND f.source = ? LIMIT 1", (match, source)).fetchone()
+            if not hit:
+                problems.append(f'search "{term}" finds nothing in {source}')
+    foods = db.execute("SELECT count(*) FROM food").fetchone()[0]
+    indexed = db.execute("SELECT count(*) FROM food_fts").fetchone()[0]
+    if indexed != foods:
+        problems.append(f"search index has {indexed:,} rows, food has {foods:,}")
+    # Carbohydrates up to 110 g: CoFID gives them as monosaccharide equivalents,
+    # so sugar comes to 105 g per 100 g.
+    bad_values = db.execute("SELECT count(*) FROM food WHERE kcal NOT BETWEEN 0 AND 950 OR protein NOT BETWEEN 0 AND 100 "
+                            "OR carbohydrates NOT BETWEEN 0 AND 110 OR fat NOT BETWEEN 0 AND 100").fetchone()[0]
+    if bad_values:
+        problems.append(f"{bad_values} foods with energy or macros out of range")
+    defaults = db.execute("SELECT count(*) FROM (SELECT food_id FROM portion GROUP BY food_id HAVING sum(is_default) != 1)").fetchone()[0]
+    if defaults:
+        problems.append(f"{defaults} foods without exactly one default portion")
+    bad_portions = db.execute("SELECT count(*) FROM portion WHERE grams <= 0 OR grams > 2000").fetchone()[0]
+    if bad_portions:
+        problems.append(f"{bad_portions} portions weigh 0 g or more than 2 kg")
+    if orphans:
+        problems.append(f"{len(orphans)} portions for foods that are not in the tables: {', '.join(orphans[:5])}")
+    return problems
 
 
 def main() -> None:
@@ -236,6 +314,7 @@ def main() -> None:
     parser.add_argument("--cache", type=Path, default=DEFAULT_CACHE, help=f"cache folder (default {DEFAULT_CACHE})")
     parser.add_argument("--food-data", type=Path, default=DEFAULT_FOOD_DATA, help="FoodData folder of the app repository")
     parser.add_argument("--output", type=Path, help="database file (default: cache folder/nutryn-foods.sqlite)")
+    parser.add_argument("--accept-changes", action="store_true", help="allow counts to drop more than 5 %% compared with the previous build")
     args = parser.parse_args()
     output = args.output or args.cache / "nutryn-foods.sqlite"
 
@@ -243,10 +322,10 @@ def main() -> None:
     food_data = load_food_data(args.food_data)
     if food_data is None:
         print(f"Warning: {args.food_data} not found. Building without NEVO and without portions for the national tables.")
-    meta = build(args.cache, food_data, output)
+    meta = build(args.cache, food_data, output, args.accept_changes)
     for key, value in meta.items():
         print(f"  {key:16} {value}")
-    print(f"Written {output} ({output.stat().st_size / 1e6:.0f} MB) in {time.time() - started:.0f} s")
+    print(f"Checks passed. Written {output} ({output.stat().st_size / 1e6:.0f} MB) in {time.time() - started:.0f} s")
 
 
 if __name__ == "__main__":
