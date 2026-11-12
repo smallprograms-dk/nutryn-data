@@ -2,7 +2,7 @@
 
 The scripts that build the food database shipped with [Nutryn](https://smallprograms.dk), a food diary for iPhone by Small Programs (a trading name of INVAR IT ApS).
 
-Work in progress: the Open Food Facts selection and the national food tables are done; names in three languages and the SQLite build follow.
+Work in progress: the build works; checks and a first release follow.
 
 ## Open Food Facts selection
 
@@ -27,6 +27,20 @@ Python 3.11 or later, standard library only. The export (±1.5 GB) and the resul
 ```sh
 python3 -I scripts/national.py
 ```
+
+## Building the database
+
+`scripts/build.py` combines the Open Food Facts selection, the national tables and the app's own names, keywords and portions into `nutryn-foods.sqlite` (±127 MB): one `food` table, vitamins and minerals in `micro`, named portions in `portion` (with Dutch, German and English names in `portion_name`), a full-text index `food_fts` (diacritics ignored) and a `meta` table with versions and counts.
+
+```sh
+python3 -I scripts/off.py
+python3 -I scripts/national.py
+python3 -I scripts/build.py --food-data ../Nutryn/FoodData
+```
+
+The names, keywords and portions (`--food-data`) are kept in the private app repository, because the names are derived from NEVO. Without that folder the build leaves out NEVO and the portions for the national tables, and says so.
+
+**The built database contains NEVO data and is never published** (not committed, not attached to a release). Only the scripts and the Open Food Facts selection are public.
 
 ## Licences
 
