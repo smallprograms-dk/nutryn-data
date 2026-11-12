@@ -12,6 +12,8 @@ Values are per 100 g (NEVO: per 100 ml for its liquids). Unknown values
 stay empty; "trace" counts as 0. Salt is taken from the table where given
 (BLS), otherwise sodium x 2.5. Vitamins and minerals are kept in one
 unit per key (see MICROS), converted where a table uses another unit.
+CoFID foods "weighed with" bones, skin, stones or shells are left out:
+their values include the inedible part.
 
 Writes national-foods.tsv.gz to the cache folder.
 
@@ -236,6 +238,10 @@ def read_cofid(cache: Path) -> list[dict]:
 
     foods = []
     for food, row in proximates.items():
+        # "Weighed with bones/skin/stones/shells": the values include the part
+        # you don't eat. Each has an edible-portion counterpart, so skip it.
+        if "weighed with" in row[1].lower():
+            continue
         micros = {}
         for column, key in COFID_MICROS.items():
             if column in v_index:
