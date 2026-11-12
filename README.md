@@ -30,7 +30,7 @@ python3 -I scripts/national.py
 
 ## Building the database
 
-`scripts/build.py` combines the Open Food Facts selection, the national tables and the app's own names, keywords and portions into `nutryn-foods.sqlite` (±127 MB): one `food` table, vitamins and minerals in `micro`, named portions in `portion` (with Dutch, German and English names in `portion_name`), a full-text index `food_fts` (diacritics ignored) and a `meta` table with versions and counts.
+`scripts/build.py` combines the Open Food Facts selection, the national tables and the app's own names, keywords and portions into `nutryn-foods.sqlite` (±127 MB): one `food` table, vitamins and minerals in `micro`, named portions in `portion` (with Dutch, German and English names in `portion_name`), full-text indexes `national_fts` and `off_fts` (diacritics ignored; split so the small national tables are searched instantly) and a `meta` table with versions and counts.
 
 ```sh
 python3 -I scripts/off.py

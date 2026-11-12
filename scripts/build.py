@@ -18,7 +18,8 @@ Tables
   micro       vitamins and minerals per 100 g (national tables)
   portion     named portions per product
   portion_name  portion key -> Dutch, German, English
-  food_fts    full-text index over names, keywords and brand
+  national_fts, off_fts  full-text indexes over names, keywords and brand
+                (split, so searching the national tables stays instant)
   meta        versions and counts, shown in the app under Sources
 
 Usage: python3 -I scripts/build.py [--cache DIR] [--food-data DIR] [--output FILE]
@@ -78,10 +79,13 @@ INDEXES = """
 CREATE UNIQUE INDEX food_barcode ON food(barcode) WHERE barcode IS NOT NULL;
 CREATE INDEX food_source ON food(source, source_id) WHERE source != 'off';  -- off: by barcode
 CREATE INDEX portion_food ON portion(food_id);
-CREATE VIRTUAL TABLE food_fts USING fts5(
+CREATE VIRTUAL TABLE national_fts USING fts5(
     name, name_nl, name_de, name_en, keywords, brand,
-    content='',
-    tokenize='unicode61 remove_diacritics 2'
+    content='', tokenize='unicode61 remove_diacritics 2'
+);
+CREATE VIRTUAL TABLE off_fts USING fts5(
+    name, name_nl, name_de, name_en, keywords, brand,
+    content='', tokenize='unicode61 remove_diacritics 2'
 );
 """
 
@@ -210,8 +214,11 @@ def build(cache: Path, food_data: dict | None, output: Path, accept_changes: boo
 
     # Indexes, full-text search, meta
     db.executescript(INDEXES)
-    db.executemany("INSERT INTO food_fts (rowid, name, name_nl, name_de, name_en, keywords, brand) VALUES (?, ?, ?, ?, ?, ?, ?)", fts_rows)
-    db.execute("INSERT INTO food_fts(food_fts) VALUES ('optimize')")
+    off_ids = {food_id for (source, _), food_id in ids.items() if source == "off"}
+    for table, rows in (("national_fts", [r for r in fts_rows if r[0] not in off_ids]),
+                        ("off_fts", [r for r in fts_rows if r[0] in off_ids])):
+        db.executemany(f"INSERT INTO {table} (rowid, name, name_nl, name_de, name_en, keywords, brand) VALUES (?, ?, ?, ?, ?, ?, ?)", rows)
+        db.execute(f"INSERT INTO {table}({table}) VALUES ('optimize')")
     versions = {r["source"]: r["version"] for r in national}
     off_export = cache / "openfoodfacts-products.csv.gz"
     meta = {
@@ -284,12 +291,13 @@ def check(db: sqlite3.Connection, meta: dict, previous: dict, with_nevo: bool, o
     for term, source in KNOWN_SEARCHES:
         if with_nevo or source != "nevo":
             match = " ".join(f'"{word}"*' for word in term.split())
-            hit = db.execute("SELECT 1 FROM food_fts JOIN food f ON f.id = food_fts.rowid "
-                             "WHERE food_fts MATCH ? AND f.source = ? LIMIT 1", (match, source)).fetchone()
+            table = "off_fts" if source == "off" else "national_fts"
+            hit = db.execute(f"SELECT 1 FROM {table} JOIN food f ON f.id = {table}.rowid "
+                             f"WHERE {table} MATCH ? AND f.source = ? LIMIT 1", (match, source)).fetchone()
             if not hit:
                 problems.append(f'search "{term}" finds nothing in {source}')
     foods = db.execute("SELECT count(*) FROM food").fetchone()[0]
-    indexed = db.execute("SELECT count(*) FROM food_fts").fetchone()[0]
+    indexed = sum(db.execute(f"SELECT count(*) FROM {table}").fetchone()[0] for table in ("national_fts", "off_fts"))
     if indexed != foods:
         problems.append(f"search index has {indexed:,} rows, food has {foods:,}")
     # Carbohydrates up to 110 g: CoFID gives them as monosaccharide equivalents,
